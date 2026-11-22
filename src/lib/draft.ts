@@ -55,11 +55,13 @@ async function callModel<S extends z.ZodType>(opts: {
   prompt: string;
   maxOutputTokens: number;
   usage: { requests: number };
+  cachedOnly?: boolean;
 }): Promise<z.infer<S>> {
   const key = cacheKey({ models: [MODEL_ID, ...FALLBACK_MODELS], system: opts.system, prompt: opts.prompt });
   const hit = readCache<{ output: z.infer<S> }>(key);
   if (hit && opts.schema.safeParse(hit.output).success) return hit.output;
 
+  if (opts.cachedOnly) throw new NotCachedError();
   const quota = await getFreeQuota();
   if (quota && quota.remaining < 1) throw new QuotaExhaustedError(quota);
 
@@ -171,11 +173,18 @@ Saying the page doesn't list something, or that the shop will check, is supporte
 // Pipeline
 // ---------------------------------------------------------------------------
 
-export async function draftReply(input: {
-  product: Product;
-  message: string;
-  shopperName?: string;
-}): Promise<DraftResult> {
+/** Thrown in cached-only mode when a draft would need a new (quota-spending) model request. */
+export class NotCachedError extends Error {
+  constructor() {
+    super("Not drafted yet, and cached-only mode doesn't spend free requests.");
+    this.name = "NotCachedError";
+  }
+}
+
+export async function draftReply(
+  input: { product: Product; message: string; shopperName?: string },
+  opts: { cachedOnly?: boolean } = {},
+): Promise<DraftResult> {
   const started = Date.now();
   const { product } = input;
   const message = input.message.trim();
@@ -190,6 +199,7 @@ export async function draftReply(input: {
     prompt: `PRODUCT PAGE\n${page}\n\nSHOPPER MESSAGE\n${message}`,
     maxOutputTokens: 4000,
     usage,
+    cachedOnly: opts.cachedOnly,
   });
 
   // --- Step 2a: every quote must actually be on the page -----------------------------------
@@ -348,6 +358,7 @@ export async function draftReply(input: {
       prompt: `PRODUCT PAGE\n${page}\n\nANSWERS\n${toAudit.map(({ index, it }) => `[${index}] Q: ${it.question}\nA: ${it.answer}`).join("\n\n")}`,
       maxOutputTokens: 2000,
       usage,
+      cachedOnly: opts.cachedOnly,
     });
     const problems: string[] = [];
     for (const r of audit.results) {

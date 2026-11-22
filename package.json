@@ -9,7 +9,11 @@
     "lint": "eslint",
     "eval": "tsx scripts/eval.ts",
     "check:glossary": "tsx scripts/check-glossary.ts",
-    "check:key": "node scripts/check-openrouter.mjs"
+    "check:key": "node scripts/check-openrouter.mjs",
+    "answers": "tsx scripts/generate-answers.ts",
+    "grade": "tsx scripts/build-grading-tests.ts && PROMPTFOO_DISABLE_TELEMETRY=1 PROMPTFOO_DISABLE_UPDATE=1 promptfoo eval -c promptfoo/promptfooconfig.yaml --env-file .env.local -j 1 --delay 3500 --no-share --no-table -o promptfoo/output/results.json; tsx scripts/gate-report.ts",
+    "gate": "npm run answers && npm run grade",
+    "gate:report": "tsx scripts/gate-report.ts"
   },
   "dependencies": {
     "@openrouter/ai-sdk-provider": "^3.1.0",
@@ -28,6 +32,7 @@
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "16.4.6",
+    "promptfoo": "^0.126.0",
     "tailwindcss": "4.3.3",
     "tsx": "^4.23.15",
     "typescript": "^5"

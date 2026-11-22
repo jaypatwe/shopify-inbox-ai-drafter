@@ -99,7 +99,7 @@ const TERM_ALIASES: Record<string, { tags?: string[]; words?: string[] }> = {
  * Ingredient words shoppers use. Detected in the message by code, so the ingredient yes/no check
  * runs even when a (free) model forgets to report what the shopper asked about.
  */
-const SHOPPER_TERMS = [
+export const SHOPPER_TERMS = [
   "almond oil", "almond", "tree nuts", "tree nut", "nuts", "nut", "peanut", "macadamia", "apricot",
   "coconut oil", "coconut", "shea butter", "shea", "cocoa butter", "cocoa", "lanolin", "wool",
   "beeswax", "honey", "propolis", "bees", "oat", "vitamin e", "vit e", "tocopherol", "vitamin c",

@@ -1,0 +1,76 @@
+# Shopper reply gate. Grades the drafted replies in data/answer.csv; run with `npm run grade`.
+#
+# Every reply gets three checks and a final verdict:
+#   1_ingredient_truth  code, zero tolerance: no made-up or denied ingredients
+#   2_reply_rules       code: plain-English names, "check with the shop" line, facility warning,
+#                       no unsupported safety or free-from claims
+#   3_ai_judge          llm-rubric, AI judge on a free OpenRouter model; score must be >= 0.7
+#   Final verdict: PASS only if all three pass (promptfoo's default: every assertion must pass).
+#
+# The replies are already written, so the "provider" is echo: it hands back the reply unchanged
+# for the assertions to grade. Only the AI judge makes model calls (one per reply).
+description: Shopper reply gate (pilot)
+
+prompts:
+  - "{{reply}}"
+
+providers:
+  - id: echo
+    label: drafted-reply
+
+# Built from data/answer.csv by scripts/build-grading-tests.ts.
+tests: file://tests.generated.json
+
+defaultTest:
+  options:
+    # The AI judge: a free model from a different vendor than the model that drafted the replies.
+    provider:
+      id: openrouter:nvidia/nemotron-3.5-super-vl:free
+      config:
+        temperature: 0
+        max_tokens: 4000
+    # Custom grader prompt with a filled-in example: with promptfoo's default template
+    # ({reason: string, ...}) the free judge sometimes echoed the template instead of grading.
+    rubricPrompt: |
+      [
+        {
+          "role": "system",
+          "content": "You are a strict, fair grader of customer-service replies. Read the rubric and the output, then respond with ONLY one JSON object and nothing else. Example of the exact format: {\"reason\": \"The reply correctly says beeswax is listed and quotes the page's facility warning; nothing is invented.\", \"score\": 0.9, \"pass\": true}. The reason is your own one- or two-sentence explanation of THIS output. The score is a number from 0.0 to 1.0. pass is true only if the score is 0.7 or higher."
+        },
+        {
+          "role": "user",
+          "content": "<rubric>\n{{rubric}}\n</rubric>\n\n<output>\n{{output}}\n</output>"
+        }
+      ]
+  assert:
+    - type: llm-rubric
+      metric: 3_ai_judge
+      threshold: 0.7
+      value: |
+        You are grading a reply drafted for a skincare shop's chat inbox. The PRODUCT PAGE below is the
+        only source of truth. Shoppers make allergy decisions from these replies, so a false statement
+        is far worse than an honest "I'll check with the shop".
+
+        PRODUCT PAGE (each Latin ingredient name is followed by its plain-English name):
+        {{product_page}}
+
+        SHOPPER QUESTION:
+        {{question}}
+
+        The output is the reply to grade. Judge it on:
+        1. Accuracy: every fact matches the product page. A made-up ingredient, a wrong yes/no about an
+           ingredient, an invented policy (shipping, returns, stock, discounts) or a safety/suitability
+           claim the page does not make is a serious error.
+        2. Grounding: it uses only the page. When the page does not answer something, saying the shop
+           will check is the CORRECT behavior and must not lower the score.
+        3. Helpfulness: it answers what the page can answer, clearly and in plain words, and includes
+           the page's facility/allergen warning when the shopper has an allergy concern.
+
+        Score:
+        - 1.0: accurate, grounded, answers everything the page can answer, defers the rest.
+        - 0.8: accurate and grounded with minor issues (a bit wordy, slightly over-cautious, an unneeded detail).
+        - 0.6: accurate but unhelpful: vague or defers on something the page clearly answers, or skips part of the question.
+        - 0.3: misleading or confusing, even if not strictly false.
+        - 0.0: any false or unsupported statement, made-up ingredient, wrong ingredient answer, or unsupported safety claim.
+        Set pass to true only if the score is 0.7 or higher.
+        (Grading attempt {{judge_attempt}}.)

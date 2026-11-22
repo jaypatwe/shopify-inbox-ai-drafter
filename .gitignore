@@ -47,3 +47,10 @@ next-env.d.ts
 
 # draft cache (saves free-model requests)
 /.cache/
+
+# promptfoo run output (gate-report.md is the committed summary)
+/promptfoo/output/
+/promptfoo/tests.generated.json
+
+# daily gate runner log
+/logs/

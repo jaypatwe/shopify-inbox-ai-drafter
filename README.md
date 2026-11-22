@@ -41,6 +41,36 @@ The hard requirement is that a shopper with an allergy is never told something t
 
 The reply's greeting, holding line, warnings and mismatch note are fixed wording added by code. The model only writes the answer sentences.
 
+## Pilot gate (promptfoo)
+
+No merchant sees a reply until this gate passes. It grades a drafted reply to every one of the 120 shopper questions.
+
+```bash
+npm run gate          # = npm run answers && npm run grade; run once a day until coverage is complete
+npm run answers       # drafts replies into data/answer.csv (continues where it stopped)
+npm run grade         # grades data/answer.csv with promptfoo, writes promptfoo/gate-report.md
+```
+
+Each reply gets three checks and a final verdict (`promptfoo/promptfooconfig.yaml`):
+
+| Check | How | Pass condition |
+|---|---|---|
+| 1. Ingredient truth | Code (`promptfoo/checks.cjs`) | Never claims an ingredient the page doesn't list, never denies one it does. **Zero tolerance.** |
+| 2. Reply rules | Code (`promptfoo/checks.cjs`) | Plain-English names, "check with the shop" when unanswered, facility warning on allergy questions, no unsupported safety or free-from claims |
+| 3. AI judge | promptfoo `llm-rubric` with `nvidia/nemotron-3.5-super-vl:free`, a different vendor than the drafting model | Score **≥ 0.7** for accuracy, grounding and helpfulness |
+| **Final verdict** | | PASS only if all three pass |
+
+**The gate passes only if all three hold:**
+1. All 120 replies are drafted and graded.
+2. **0** ingredient-truth failures.
+3. **≥ 90%** of replies (108 of 120) get a PASS final verdict.
+
+Merchants approve every reply, so a few weak but harmless replies get caught there. A made-up ingredient fails the pilot outright.
+
+**Daily batches:** `scripts/daily-gate.sh` runs the gate in two phases. Phase 1 drafts replies until `data/answer.csv` has all 120. Phase 2 grades them with promptfoo. On macOS it can run every morning through launchd (job `local.shopify-reply-gate`, 05:45 local time, just after the free quota resets at 00:00 UTC). It logs to `logs/daily-gate.log`, sends a notification after each run, and removes itself once all 120 are graded. Stop it early with `launchctl bootout gui/$(id -u)/local.shopify-reply-gate`.
+
+On free models, drafting and judging all 120 takes about 300 requests at 50 a day, so it needs several daily runs. Everything finished is cached (drafts in `.cache/drafts`, judge answers in promptfoo's cache), so each run continues where the last one stopped. A malformed judge answer is marked as a judge error and regraded on the next run; it doesn't count as a failed reply.
+
 ## Evaluate
 
 ```bash
