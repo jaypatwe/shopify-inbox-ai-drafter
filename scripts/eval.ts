@@ -19,7 +19,7 @@ process.loadEnvFile(".env.local");
 
 const only = new Set(process.argv.slice(2));
 const questions = getQuestions().filter((q) => !only.size || only.has(q.question_id));
-const CONCURRENCY = 6;
+const CONCURRENCY = Number(process.env.EVAL_CONCURRENCY ?? 6);
 
 type Row = {
   q: ShopperQuestion;
@@ -91,8 +91,10 @@ function score(q: ShopperQuestion, d: DraftResult): { findings: string[]; labelN
 
     // 6. Risky wording the page doesn't back
     const pageText = Object.values(product).join(" ").toLowerCase();
+    // The holding line names topics ("whether it's suitable for…"); it isn't a claim, so skip it.
+    const claims = reply.split("\n\n").filter((p) => !/check with the shop/i.test(p)).join("\n\n");
     for (const w of ["safe", "nut-free", "nut free", "vegan", "cruelty", "suitable", "hypoallergenic"]) {
-      if (new RegExp(`\\b${w}\\b`, "i").test(reply) && !pageText.includes(w) && !new RegExp(`(not|can't|cannot|don't|doesn't)[^.]{0,40}${w}`, "i").test(reply))
+      if (new RegExp(`\\b${w}\\b`, "i").test(claims) && !pageText.includes(w) && !new RegExp(`(not|can't|cannot|don't|doesn't)[^.]{0,40}${w}`, "i").test(claims))
         findings.push(`Review wording: reply uses "${w}", which the page doesn't say.`);
     }
     return findings;
@@ -169,8 +171,12 @@ async function run() {
   }
   md.push(`## Every draft`, ``);
   for (const r of rows) {
-    md.push(`### ${r.q.question_id} · ${getProduct(r.q.product_id)?.title ?? r.q.product_id} · ${r.draft?.overall ?? "error"}`, ``);
-    md.push(`> ${r.q.question_text}`, ``);
+    md.push(`### ${r.q.question_id} · ${r.q.product_id} ${getProduct(r.q.product_id)?.title ?? ""} · ${r.draft?.overall ?? "error"}`, ``);
+    md.push(
+      `product_id: \`${r.q.product_id}\` · category: ${r.q.question_category} · answerable_from_page (CSV): ${r.q.answerable_from_page}`,
+      ``,
+    );
+    md.push(`> **${r.q.shopper_first_name}:** ${r.q.question_text}`, ``);
     md.push(r.draft ? r.draft.reply : `Error: ${r.error}`, ``);
   }
 

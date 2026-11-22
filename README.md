@@ -2,7 +2,9 @@
 
 Drafts replies to shopper chat questions using **only what's on the product page**. If the page doesn't answer the question, the reply says *"I'll check with the shop and get back to you"* rather than guessing. The merchant reviews and approves every draft.
 
-Built with Next.js 16, the Vercel AI SDK (v7) and OpenRouter.
+Built with Next.js 16, the Vercel AI SDK (v7) and OpenRouter. Uses a free OpenRouter model by default.
+
+**See it work:** [`samples/sample-replies.md`](samples/sample-replies.md) has three real drafts, each matched to its product page by `product_id`.
 
 ## Run it
 
@@ -31,7 +33,8 @@ The reply's greeting, holding line and warnings are added by code. The model onl
 ## Evaluate
 
 ```bash
-npm run eval               # all 120 questions in data/questions.csv (~$1.50 of OpenRouter credit)
+npm run eval               # all 120 questions in data/questions.csv
+EVAL_CONCURRENCY=1 npm run eval   # one at a time (free models rate-limit)
 npm run eval Q-001 Q-024   # specific questions
 ```
 
@@ -47,4 +50,4 @@ This writes `eval/report.md` (summary and every draft) and `eval/results.json`. 
 | Variable | Default |
 |---|---|
 | `OPENROUTER_API_KEY` | required |
-| `OPENROUTER_MODEL` | `anthropic/claude-sonnet-5.5` |
+| `OPENROUTER_MODEL` | `baidu/ernie-5.5-flash-preview:free` (free). A stronger paid model such as `anthropic/claude-sonnet-5.5` gives fuller answers once the account has credits. |

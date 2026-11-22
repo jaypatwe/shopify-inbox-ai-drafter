@@ -1,0 +1,197 @@
+[
+  {
+    "q": {
+      "question_id": "Q-013",
+      "product_id": "DSP-036",
+      "chat_received_at": "2026-10-29T21:09:51Z",
+      "shopper_first_name": "Yara",
+      "question_text": "Do you ship to Canada? And if so how long does shipping usually take? Trying to get a gift there by early December",
+      "question_category": "other",
+      "ingredient_mentioned": "",
+      "answerable_from_page": "false",
+      "expected_answer_note": "Page does not mention shipping to Canada; merchant will check."
+    },
+    "findings": [],
+    "draft": {
+      "productId": "DSP-036",
+      "productTitle": "Tinted Mineral Sunscreen SPF 30",
+      "reply": "Hi Yara, thanks for reaching out!\n\nI'll check with the shop and get back to you.\n\nThanks!",
+      "overall": "needs_shop",
+      "items": [
+        {
+          "question": "Do you ship to Canada, and how long does shipping usually take?",
+          "status": "needs_shop",
+          "answer": "",
+          "evidence": [],
+          "downgradeReason": "Second-pass review: The answer says the page \u201cdoesn\u2019t include any shipping or delivery information,\u201d which is supported. But it also says \u201cAll it lists is the Tinted Mineral Sunscreen SPF 30 in one size, 50 ml, at 32.00 USD.\u201d The page lists more than that, including description, ingredients, allergen statement, and usage instructions. That extra claim is not supported."
+        }
+      ],
+      "ingredientClaims": [],
+      "facilityWarning": "Made in a facility that also handles tree nuts.",
+      "allergyConcern": false,
+      "productMismatch": null,
+      "checks": [
+        {
+          "label": "Every quote was found on the product page",
+          "ok": true,
+          "detail": "0 of 0 quotes verified"
+        },
+        {
+          "label": "Ingredient names include a plain-English name",
+          "ok": true,
+          "detail": "OK"
+        },
+        {
+          "label": "Second-pass review found every answer supported by the page",
+          "ok": false,
+          "detail": "1 answer(s) held back: The answer says the page \u201cdoesn\u2019t include any shipping or delivery information,\u201d which is supported. But it also says \u201cAll it lists is the Tinted Mineral Sunscreen SPF 30 in one size, 50 ml, at 32.00 USD.\u201d The page lists more than that, including description, ingredients, allergen statement, and usage instructions. That extra claim is not supported."
+        }
+      ],
+      "model": "baidu/ernie-5.5-flash-preview:free",
+      "ms": 5408
+    }
+  },
+  {
+    "q": {
+      "question_id": "Q-032",
+      "product_id": "DSP-027",
+      "chat_received_at": "2026-10-24T21:12:44Z",
+      "shopper_first_name": "Bea",
+      "question_text": "is this actually nut free or was it made near nuts? my daughter has a severe nut allergy so I'm being extra careful with every single product",
+      "question_category": "allergen",
+      "ingredient_mentioned": "",
+      "answerable_from_page": "true",
+      "expected_answer_note": "allergen_statement gives a may contain nuts facility warning; settles that it is made near nuts and is not claimed nut-free."
+    },
+    "findings": [],
+    "draft": {
+      "productId": "DSP-027",
+      "productTitle": "Baby Massage Oil",
+      "reply": "Hi Bea, thanks for reaching out!\n\nPlease also note that the product page says: \"Made in a facility that also handles tree nuts.\"\n\nI'll check with the shop and get back to you.\n\nThanks!",
+      "overall": "needs_shop",
+      "items": [
+        {
+          "question": "Is this product nut-free, and was it made near nuts?",
+          "status": "needs_shop",
+          "answer": "",
+          "evidence": [
+            {
+              "field": "allergen_statement",
+              "quote": "Made in a facility that also handles tree nuts.",
+              "verified": true
+            }
+          ],
+          "downgradeReason": "Second-pass review: not_supported"
+        }
+      ],
+      "ingredientClaims": [
+        {
+          "term": "nut",
+          "onList": false,
+          "matched": []
+        }
+      ],
+      "facilityWarning": "Made in a facility that also handles tree nuts.",
+      "allergyConcern": true,
+      "productMismatch": null,
+      "checks": [
+        {
+          "label": "Every quote was found on the product page",
+          "ok": true,
+          "detail": "1 of 1 quotes verified"
+        },
+        {
+          "label": "Ingredient answers match the ingredient dictionary",
+          "ok": true,
+          "detail": "nut: not on the list"
+        },
+        {
+          "label": "Ingredient names include a plain-English name",
+          "ok": true,
+          "detail": "OK"
+        },
+        {
+          "label": "Second-pass review found every answer supported by the page",
+          "ok": false,
+          "detail": "1 answer(s) held back: not_supported"
+        },
+        {
+          "label": "Facility allergen warning included",
+          "ok": true,
+          "detail": "Added to the reply"
+        }
+      ],
+      "model": "baidu/ernie-5.5-flash-preview:free",
+      "ms": 12493
+    }
+  },
+  {
+    "q": {
+      "question_id": "Q-064",
+      "product_id": "DSP-004",
+      "chat_received_at": "2026-10-26T07:15:02Z",
+      "shopper_first_name": "Dana",
+      "question_text": "hey does this balm have beeswax in it? i always check the label for beeswax because my skin reacts to some wax based stuff, so just wondering if its in there",
+      "question_category": "ingredient",
+      "ingredient_mentioned": "beeswax",
+      "answerable_from_page": "true",
+      "expected_answer_note": "ingredient_list includes Cera Alba (beeswax): beeswax is present in the balm."
+    },
+    "findings": [
+      "No ingredient check recorded for \"beeswax\"."
+    ],
+    "draft": {
+      "productId": "DSP-004",
+      "productTitle": "Calendula Healing Balm Light",
+      "reply": "Hi Dana, thanks for reaching out!\n\nYes, beeswax is in this balm. It appears in the ingredient list as \"Cera Alba (Beeswax)\". Since you mentioned your skin reacts to some waxes, I also want to flag the page's facility note: \"Made in a facility that also handles tree nuts.\"\n\nThanks!",
+      "overall": "answered",
+      "items": [
+        {
+          "question": "Does this balm contain beeswax? (shopper's skin reacts to some wax-based products)",
+          "status": "answered",
+          "answer": "Yes, beeswax is in this balm. It appears in the ingredient list as \"Cera Alba (Beeswax)\". Since you mentioned your skin reacts to some waxes, I also want to flag the page's facility note: \"Made in a facility that also handles tree nuts.\"",
+          "evidence": [
+            {
+              "field": "ingredient_list",
+              "quote": "Cera Alba (Beeswax)",
+              "verified": true
+            },
+            {
+              "field": "allergen_statement",
+              "quote": "Made in a facility that also handles tree nuts.",
+              "verified": true
+            }
+          ]
+        }
+      ],
+      "ingredientClaims": [],
+      "facilityWarning": "Made in a facility that also handles tree nuts.",
+      "allergyConcern": true,
+      "productMismatch": null,
+      "checks": [
+        {
+          "label": "Every quote was found on the product page",
+          "ok": true,
+          "detail": "2 of 2 quotes verified"
+        },
+        {
+          "label": "Ingredient names include a plain-English name",
+          "ok": true,
+          "detail": "OK"
+        },
+        {
+          "label": "Second-pass review found every answer supported by the page",
+          "ok": true,
+          "detail": "1 answer(s) reviewed"
+        },
+        {
+          "label": "Facility allergen warning included",
+          "ok": true,
+          "detail": "Included in the answer"
+        }
+      ],
+      "model": "baidu/ernie-5.5-flash-preview:free",
+      "ms": 7985
+    }
+  }
+]

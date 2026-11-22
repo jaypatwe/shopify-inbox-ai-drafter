@@ -18,7 +18,8 @@ import {
   type Product,
 } from "./types";
 
-export const MODEL_ID = process.env.OPENROUTER_MODEL || "anthropic/claude-sonnet-5.5";
+// Free model by default. Override with OPENROUTER_MODEL (e.g. anthropic/claude-sonnet-5.5) once the account has credits.
+export const MODEL_ID = process.env.OPENROUTER_MODEL || "baidu/ernie-5.5-flash-preview:free";
 
 const HOLDING_LINE = "I'll check with the shop and get back to you";
 
@@ -44,9 +45,6 @@ const draftSchema = z.object({
     .array(
       z.object({
         question: z.string().describe("The shopper's question, restated briefly."),
-        topic: z
-          .string()
-          .describe("2-8 words that complete the sentence 'I'll check with the shop about ___', e.g. 'shipping to Canada', 'use during pregnancy', 'whether it's suitable for a nut allergy'."),
         status: z.enum(["answered", "needs_shop"]),
         answer: z
           .string()
@@ -79,17 +77,18 @@ const DRAFT_SYSTEM = `You draft replies for a skincare shop's chat inbox. A merc
 
 RULES
 1. Use only the PRODUCT PAGE given to you. Do not use general knowledge about ingredients, cosmetics, the brand, shipping, returns or policies. If the page does not state it, the item is needs_shop.
-2. Split the shopper's message into separate questions, one item each.
+2. Split the shopper's message into separate questions, one item each. Keep closely related questions together as one item (e.g. "do you ship to Canada and how long does it take" is one item about shipping to Canada).
 3. An answered item may only say what its quotes say (simple arithmetic on page prices and sizes is fine). Every answered item needs at least one evidence quote copied word for word from one page field. For ingredients, quote the ingredient as it appears in the raw ingredient_list.
 4. Whenever you name an ingredient to the shopper, write it exactly as it appears in the "as you must write it" list, with the plain-English name in brackets, e.g. "Prunus Amygdalus Dulcis Oil (sweet almond oil)". Use the plain-English names to match the shopper's words to the list: a shopper asking about "almond" means Prunus Amygdalus Dulcis Oil.
-5. Ingredient present: say the product contains it and name it. If other ingredients are made from it (tagged e.g. "coconut-derived"), mention those too.
+5. Ingredient present: say the product contains it and name it. If other ingredients are made from that same thing (e.g. a coconut question and an ingredient tagged "may be coconut-derived"), mention those too. Do not mention ingredients unrelated to what the shopper asked about.
 6. Ingredient absent: you may say it is not in the listed ingredients. If the shopper is asking because of an allergy or sensitivity, or asks for a free-from claim ("nut-free", "paraben-free", "vegan"), and the allergen_statement does not make that exact claim, mark the item needs_shop and put the ingredient-list fact in the answer.
 7. Never say a product is safe, suitable or fine for an allergy, pregnancy, babies, children or a skin condition, or that it is free from something, unless the page says so in those words. No medical advice.
 8. If the allergen_statement has a "Made in a facility that also handles ..." warning and the shopper has an allergy concern, include that warning in the relevant answer, quoting it.
 9. "Parfum (Fragrance)" means the page does not list what the fragrance is made of. Questions about fragrance components are needs_shop, unless that component is listed separately in the ingredient list (then say it is listed).
 10. Shipping, returns, refunds, stock, restock dates, discounts, bundles, refills, other sizes, certifications (cruelty-free, vegan, organic), pregnancy, infant use and how long a product lasts are not on product pages unless a field says so. State the page facts that help (e.g. "This page lists one size, 50 ml, at 22.00 USD") and mark the rest needs_shop.
 11. If the shopper names a product, type or size that does not match this page, fill product_mismatch, and still answer for this page's product.
-12. Tone: warm, short, plain words, addressed to the shopper as "you". No greeting or sign-off, and never say the shop will check or confirm: the app adds those lines.`;
+12. Name only the ingredients that matter to the question; never paste the whole ingredient list.
+13. Tone: warm, short, plain words, addressed to the shopper as "you". No greeting or sign-off, and never say the shop will check or confirm: the app adds those lines.`;
 
 // ---------------------------------------------------------------------------
 // Step 3: audit. A second model call checks every answer against the page.
@@ -129,13 +128,16 @@ export async function draftReply(input: {
   const ingredients = annotateIngredients(product);
   const checks: Check[] = [];
 
-  const { output: draft } = await generateText({
-    model: model(),
-    temperature: 0,
-    maxOutputTokens: 1500,
-    output: Output.object({ schema: draftSchema }),
-    system: DRAFT_SYSTEM,
-    prompt: `PRODUCT PAGE\n${page}\n\nSHOPPER MESSAGE\n${message}`,
+  const draft = await withRetry(async () => {
+    const { output } = await generateText({
+      model: model(),
+      temperature: 0,
+      maxOutputTokens: 4000,
+      output: Output.object({ schema: draftSchema }),
+      system: DRAFT_SYSTEM,
+      prompt: `PRODUCT PAGE\n${page}\n\nSHOPPER MESSAGE\n${message}`,
+    });
+    return output;
   });
 
   // --- Step 2a: every quote must actually be on the page -----------------------------------
@@ -146,7 +148,7 @@ export async function draftReply(input: {
 
   let quotesTotal = 0;
   let quotesOk = 0;
-  const items: (AnswerItem & { topic: string })[] = draft.items.map((it) => {
+  const items: AnswerItem[] = draft.items.map((it) => {
     const evidence: Evidence[] = it.evidence.map((e) => {
       const q = normalizeForMatch(e.quote);
       const verified = q.length > 0 && haystacks[e.field].includes(q);
@@ -154,11 +156,14 @@ export async function draftReply(input: {
       if (verified) quotesOk++;
       return { ...e, verified };
     });
-    const item: AnswerItem & { topic: string } = {
+    const item: AnswerItem = {
       question: it.question,
-      topic: it.topic,
       status: it.status,
-      answer: it.answer.trim(),
+      // Weaker models sometimes echo the status label or the app's [tag] annotations into the text.
+      answer: it.answer
+        .replace(/\s*\b(needs_shop|answered)\b\.?/gi, "")
+        .replace(/\s*\[[^\]]*\]/g, "")
+        .trim(),
       evidence,
     };
     if (item.status === "answered" && !evidence.some((e) => e.verified)) {
@@ -238,7 +243,7 @@ export async function draftReply(input: {
     const { output: audit } = await generateText({
       model: model(),
       temperature: 0,
-      maxOutputTokens: 600,
+      maxOutputTokens: 2000,
       output: Output.object({ schema: auditSchema }),
       system: AUDIT_SYSTEM,
       prompt: `PRODUCT PAGE\n${page}\n\nANSWERS\n${toAudit.map(({ index, it }) => `[${index}] Q: ${it.question}\nA: ${it.answer}`).join("\n\n")}`,
@@ -295,11 +300,12 @@ export async function draftReply(input: {
     }
     for (const i of items) if (i.answer) parts.push(i.answer);
     if (facilityNote) parts.push(facilityNote);
-    const pending = items.filter((i) => i.status === "needs_shop").map((i) => i.topic);
-    if (pending.length || items.length === 0) {
-      parts.push(
-        pending.length ? `I'll check with the shop about ${joinList(pending)} and get back to you.` : `${HOLDING_LINE}.`,
-      );
+    // Fixed wording rather than a model-written summary of what's pending: the merchant already
+    // sees which question is pending in the draft panel.
+    const pending = items.filter((i) => i.status === "needs_shop").length;
+    const answeredCount = items.length - pending;
+    if (pending || items.length === 0) {
+      parts.push(answeredCount && pending ? `For the rest of your question, ${HOLDING_LINE}.` : `${HOLDING_LINE}.`);
     }
     parts.push("Thanks!");
     reply = parts.join("\n\n");
@@ -327,11 +333,26 @@ export async function draftReply(input: {
   };
 }
 
+/**
+ * The SDK already retries network/API errors. This also retries when a (free) model returns
+ * nothing or malformed JSON, which shows up as NoOutputGeneratedError / NoObjectGeneratedError.
+ */
+async function withRetry<T>(fn: () => Promise<T>, attempts = 3): Promise<T> {
+  let last: unknown;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return await fn();
+    } catch (e) {
+      last = e;
+      const name = e instanceof Error ? e.name : "";
+      if (!/NoOutputGenerated|NoObjectGenerated|TypeValidation|JSONParse/i.test(name)) throw e;
+    }
+  }
+  throw last;
+}
+
 function escapeRegex(s: string) {
   return s.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
 }
 
-function joinList(xs: string[]) {
-  if (xs.length <= 1) return xs.join("");
-  return `${xs.slice(0, -1).join(", ")} and ${xs[xs.length - 1]}`;
-}
+

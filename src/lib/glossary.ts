@@ -132,6 +132,7 @@ const ENTRIES: Record<string, GlossaryEntry> = {
  */
 export function normalizeInci(name: string): string {
   return name
+    .replace(/\[[^\]]*\]/g, " ") // tags the app adds, e.g. "[bee product]"
     .replace(/\([^)]*\)/g, " ")
     .replace(/\s+/g, " ")
     .trim()
@@ -145,7 +146,7 @@ export function lookupIngredient(inci: string): GlossaryEntry | undefined {
 export const TAG_LABELS: Record<ConcernTag, string> = {
   tree_nut: "tree nut",
   coconut: "coconut",
-  coconut_derived: "coconut-derived",
+  coconut_derived: "may be coconut-derived",
   wool: "from sheep's wool",
   bee: "bee product",
   fragrance: "fragrance (components not listed)",
