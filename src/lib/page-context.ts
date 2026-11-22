@@ -96,6 +96,34 @@ const TERM_ALIASES: Record<string, { tags?: string[]; words?: string[] }> = {
 };
 
 /**
+ * Ingredient words shoppers use. Detected in the message by code, so the ingredient yes/no check
+ * runs even when a (free) model forgets to report what the shopper asked about.
+ */
+const SHOPPER_TERMS = [
+  "almond oil", "almond", "tree nuts", "tree nut", "nuts", "nut", "peanut", "macadamia", "apricot",
+  "coconut oil", "coconut", "shea butter", "shea", "cocoa butter", "cocoa", "lanolin", "wool",
+  "beeswax", "honey", "propolis", "bees", "oat", "vitamin e", "vit e", "tocopherol", "vitamin c",
+  "vit c", "fragrance", "perfume", "parfum", "essential oils", "essential oil", "linalool", "limonene",
+  "lavender oil", "lavender", "peppermint", "tea tree", "rosehip", "aloe", "glycerin", "niacinamide",
+  "retinol", "parabens", "paraben", "argan oil", "argan", "jojoba", "castor", "menthol", "camphor",
+  "salicylic", "willow", "zinc", "sunflower", "squalane", "hyaluronic", "sulfate", "sulfates",
+  "silicone", "silicones", "mineral oil",
+];
+
+export function detectIngredientTerms(message: string): string[] {
+  let text = ` ${message.toLowerCase().replace(/[^a-z0-9\s-]/g, " ")} `;
+  const found: string[] = [];
+  for (const term of [...SHOPPER_TERMS].sort((a, b) => b.length - a.length)) {
+    const re = new RegExp(`(?<![a-z])${term.replace(/[-]/g, "\\-")}(?![a-z])`);
+    if (re.test(text)) {
+      found.push(term);
+      text = text.replace(new RegExp(re.source, "g"), " ");
+    }
+  }
+  return found;
+}
+
+/**
  * Returns ingredients that are the thing asked about (`direct`, e.g. "Cocos Nucifera Oil" for
  * "coconut") and ingredients made from it (`related`, e.g. "Coco-Glucoside").
  */
@@ -112,7 +140,10 @@ export function findIngredient(
   for (const i of annotateIngredients(product)) {
     const tagHit = alias?.tags?.some((tag) => i.tags.includes(tag)) ?? false;
     const hay = `${normalizeInci(i.inci)} ${normalizeForMatch(i.inci)} ${normalizeForMatch(i.plain ?? "")}`;
-    const wordHit = !(alias?.tags && !alias.words) && words.some((w) => hay.includes(w));
+    // Whole-word match, so "glycerin" doesn't match "Ethylhexylglycerin".
+    const wordHit =
+      !(alias?.tags && !alias.words) &&
+      words.some((w) => new RegExp(`(?<![a-z])${w.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&")}(?![a-z])`).test(hay));
     if (!tagHit && !wordHit) continue;
     // "made from coconut oil" in a plain-English description means coconut-derived, not coconut.
     if (!tagHit && i.tags.includes("coconut_derived")) related.push(i);

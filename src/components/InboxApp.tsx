@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { annotateIngredients, facilityWarning } from "@/lib/page-context";
 import { TAG_LABELS, type ConcernTag } from "@/lib/glossary";
 import type { DraftResult, Product, ShopperQuestion } from "@/lib/types";
@@ -29,6 +29,19 @@ export function InboxApp({ products, questions }: Props) {
   const [error, setError] = useState<Record<string, string>>({});
   const [compose, setCompose] = useState({ productId: products[0]?.product_id ?? "", name: "", message: "" });
   const [mobilePane, setMobilePane] = useState<"list" | "detail">("list");
+  const [quota, setQuota] = useState<{ used: number; limit: number; remaining: number } | null>(null);
+
+  const refreshQuota = useCallback(async () => {
+    try {
+      const res = await fetch("/api/quota", { cache: "no-store" });
+      setQuota((await res.json()).quota ?? null);
+    } catch {
+      // The header just won't show the count.
+    }
+  }, []);
+  useEffect(() => {
+    refreshQuota();
+  }, [refreshQuota]);
 
   const visible = questions.filter((q) => {
     if (filter !== "all" && q.question_category !== filter) return false;
@@ -63,6 +76,7 @@ export function InboxApp({ products, questions }: Props) {
       setError((er) => ({ ...er, [key]: e instanceof Error ? e.message : String(e) }));
     } finally {
       setLoading(null);
+      refreshQuota();
     }
   }
 
@@ -78,9 +92,18 @@ export function InboxApp({ products, questions }: Props) {
           <h1 className="truncate text-[15px] font-semibold tracking-tight">Inbox reply helper</h1>
           <p className="truncate text-xs text-ink-3">Drafts only use what&rsquo;s on the product page. You approve every reply.</p>
         </div>
-        <div className="hidden shrink-0 items-center gap-2 text-xs text-ink-3 sm:flex">
-          <span className="inline-block size-2 rounded-full bg-ok" />
-          {products.length} product pages · {questions.length} chats
+        <div className="shrink-0 text-right text-xs text-ink-3">
+          {quota ? (
+            <span className={quota.remaining < 6 ? "font-medium text-warn" : ""}>
+              <span className="inline-block size-2 rounded-full align-middle mr-1.5 bg-current opacity-70" />
+              {quota.remaining} of {quota.limit} free requests left today
+            </span>
+          ) : (
+            <span>Free models</span>
+          )}
+          <span className="hidden sm:block">
+            {products.length} product pages · {questions.length} chats
+          </span>
         </div>
       </header>
 
@@ -215,7 +238,14 @@ export function InboxApp({ products, questions }: Props) {
           <div className="space-y-4 p-4 md:p-5">
             <div className="flex items-center justify-between gap-2">
               <h2 className="text-sm font-semibold">AI draft</h2>
-              {draft && <span className="text-[11px] text-ink-3">{(draft.ms / 1000).toFixed(1)}s · {draft.model.split("/")[1]}</span>}
+              {draft && (
+                <span className="text-[11px] text-ink-3">
+                  {draft.cached
+                    ? "Saved draft · used no requests"
+                    : `${(draft.ms / 1000).toFixed(1)}s · ${draft.requestsUsed} free request${draft.requestsUsed === 1 ? "" : "s"}`}{" "}
+                  · {draft.model.split("/")[1]}
+                </span>
+              )}
             </div>
 
             <button
@@ -223,7 +253,7 @@ export function InboxApp({ products, questions }: Props) {
               disabled={!!loading || !product || !message.trim()}
               className="w-full rounded-lg bg-accent px-4 py-2.5 text-sm font-medium text-white transition hover:opacity-90 disabled:opacity-50 dark:text-black"
             >
-              {loading === selected ? "Drafting and checking against the page…" : draft ? "Redraft" : "Draft reply"}
+              {loading === selected ? "Drafting and checking against the page…" : draft ? "Draft again" : "Draft reply"}
             </button>
 
             {error[selected] && <p className="rounded-lg bg-bad-soft px-3 py-2 text-sm text-bad">{error[selected]}</p>}
@@ -323,6 +353,7 @@ export function InboxApp({ products, questions }: Props) {
             {!draft && !loading && !error[selected] && (
               <p className="text-sm text-ink-3">
                 The draft answers only from the product page. If the page doesn&rsquo;t say, the reply tells the shopper you&rsquo;ll check with the shop.
+                Each draft uses 1&ndash;2 of the day&rsquo;s free requests; drafting the same question again is free.
               </p>
             )}
           </div>

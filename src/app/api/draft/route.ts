@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { getProduct } from "@/lib/catalog";
 import { draftReply } from "@/lib/draft";
+import { QuotaExhaustedError } from "@/lib/quota";
 
 const body = z.object({
   productId: z.string(),
@@ -19,16 +20,19 @@ export async function POST(request: Request) {
     const result = await draftReply({ product, message: parsed.data.message, shopperName: parsed.data.shopperName });
     return Response.json(result);
   } catch (e) {
+    if (e instanceof QuotaExhaustedError) {
+      return Response.json({ error: e.message, quota: e.quota }, { status: 429 });
+    }
     const message = e instanceof Error ? e.message : String(e);
     console.error("draft failed:", message);
-    const credits = /credits|afford/i.test(message);
+    const rateLimited = /rate.?limit|429|too many/i.test(message);
     return Response.json(
       {
-        error: credits
-          ? "OpenRouter is out of credits for this key. Add credits at openrouter.ai and try again."
+        error: rateLimited
+          ? "The free models are busy right now. Wait a minute and try again. Nothing was sent to the shopper."
           : "The draft couldn't be generated. Nothing was sent to the shopper.",
       },
-      { status: 502 },
+      { status: rateLimited ? 429 : 502 },
     );
   }
 }

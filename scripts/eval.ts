@@ -2,8 +2,12 @@
  * Runs every shopper question in data/questions.csv through the same pipeline the app uses
  * and scores the drafts against the product catalog.
  *
- *   npm run eval              # all 120 questions
+ *   npm run eval              # all 120 questions, as far as today's free quota allows
  *   npm run eval Q-001 Q-024  # just these
+ *
+ * Free models only: the key gets 50 free requests a day and a draft costs 1-2. Drafts are cached
+ * in .cache/drafts, so rerunning the next day continues where it stopped and finished questions
+ * cost nothing. The run stops cleanly when the day's quota is used up.
  *
  * Writes eval/results.json (every draft) and eval/report.md (summary).
  * The CSV's expected_answer_note column is NOT used as ground truth: many notes describe a
@@ -12,6 +16,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { getProduct, getQuestions } from "../src/lib/catalog";
 import { draftReply, MODEL_ID } from "../src/lib/draft";
+import { QuotaExhaustedError } from "../src/lib/quota";
 import { annotateIngredients, facilityWarning, findIngredient } from "../src/lib/page-context";
 import type { DraftResult, ShopperQuestion } from "../src/lib/types";
 
@@ -19,12 +24,15 @@ process.loadEnvFile(".env.local");
 
 const only = new Set(process.argv.slice(2));
 const questions = getQuestions().filter((q) => !only.size || only.has(q.question_id));
-const CONCURRENCY = Number(process.env.EVAL_CONCURRENCY ?? 6);
+// One at a time by default: free models rate-limit, and parallel calls make quota checks race.
+const CONCURRENCY = Number(process.env.EVAL_CONCURRENCY ?? 1);
 
 type Row = {
   q: ShopperQuestion;
   draft?: DraftResult;
   error?: string;
+  /** Not attempted because today's free quota ran out. Rerun tomorrow to continue. */
+  skipped?: boolean;
   findings: string[];
   labelNote?: string;
 };
@@ -74,10 +82,11 @@ function score(q: ShopperQuestion, d: DraftResult): { findings: string[]; labelN
     if (bad.length) findings.push(`${bad.length} quote(s) not found on the page (item downgraded).`);
 
     // 3. Plain-English brackets
+    const replyNoTitle = reply.split(product.title).join(" ");
     for (const ing of annotateIngredients(product)) {
       if (ing.display === ing.inci) continue;
       const re = new RegExp(`${ing.inci.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&")}(?!\\s*\\()`);
-      if (re.test(reply)) findings.push(`"${ing.inci}" appears without a plain-English name.`);
+      if (re.test(replyNoTitle)) findings.push(`"${ing.inci}" appears without a plain-English name.`);
     }
 
     // 4. Facility warning for allergy questions
@@ -106,6 +115,9 @@ async function run() {
   const rows: Row[] = [];
   let next = 0;
   let done = 0;
+  let requests = 0;
+  let fromCache = 0;
+  let quotaMessage = "";
   async function worker() {
     while (next < questions.length) {
       const q = questions[next++];
@@ -114,9 +126,17 @@ async function run() {
       try {
         if (!product) throw new Error(`Unknown product ${q.product_id}`);
         row.draft = await draftReply({ product, message: q.question_text, shopperName: q.shopper_first_name });
+        requests += row.draft.requestsUsed;
+        if (row.draft.cached) fromCache++;
         Object.assign(row, score(q, row.draft));
       } catch (e) {
-        row.error = e instanceof Error ? e.message : String(e);
+        if (e instanceof QuotaExhaustedError) {
+          // Keep going so cached questions still get scored; uncached ones are skipped.
+          row.skipped = true;
+          quotaMessage = e.message;
+        } else {
+          row.error = e instanceof Error ? e.message : String(e);
+        }
       }
       rows.push(row);
       done++;
@@ -128,6 +148,7 @@ async function run() {
   rows.sort((a, b) => a.q.question_id.localeCompare(b.q.question_id));
 
   const ok = rows.filter((r) => r.draft);
+  const skipped = rows.filter((r) => r.skipped);
   const by = (s: string) => ok.filter((r) => r.draft!.overall === s).length;
   const critical = ok.filter((r) => r.findings.some((f) => f.startsWith("CRITICAL")));
   const flagged = ok.filter((r) => r.findings.length);
@@ -139,11 +160,14 @@ async function run() {
   const md: string[] = [
     `# Reply helper evaluation`,
     ``,
-    `Model: \`${MODEL_ID}\` · ${new Date().toISOString()} · ${rows.length} questions · avg ${avgMs} ms per draft`,
+    `Model: \`${MODEL_ID}\` (free) · ${new Date().toISOString()} · ${rows.length} questions · avg ${avgMs} ms per new draft`,
+    ``,
+    `This run used ${requests} free request(s); ${fromCache} draft(s) came from the cache at no cost.`,
+    ...(skipped.length ? [``, `**${skipped.length} question(s) not drafted yet:** ${quotaMessage} Run \`npm run eval\` again tomorrow to continue.`] : []),
     ``,
     `| Metric | Result |`,
     `|---|---|`,
-    `| Drafts produced | ${ok.length} / ${rows.length}${rows.length - ok.length ? ` (${rows.length - ok.length} errors)` : ""} |`,
+    `| Drafts produced | ${ok.length} / ${rows.length}${skipped.length ? ` (${skipped.length} waiting for tomorrow's quota)` : ""}${rows.length - ok.length - skipped.length ? ` (${rows.length - ok.length - skipped.length} errors)` : ""} |`,
     `| Fully answered from page | ${by("answered")} |`,
     `| Partly answered, rest sent to shop | ${by("partial")} |`,
     `| Sent to shop ("I'll check with the shop") | ${by("needs_shop")} |`,
@@ -177,7 +201,7 @@ async function run() {
       ``,
     );
     md.push(`> **${r.q.shopper_first_name}:** ${r.q.question_text}`, ``);
-    md.push(r.draft ? r.draft.reply : `Error: ${r.error}`, ``);
+    md.push(r.draft ? r.draft.reply : r.skipped ? "_Not drafted yet (daily free quota used up)._" : `Error: ${r.error}`, ``);
   }
 
   mkdirSync("eval", { recursive: true });

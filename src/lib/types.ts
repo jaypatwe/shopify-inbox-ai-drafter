@@ -65,11 +65,15 @@ export type DraftResult = {
   reply: string;
   overall: "answered" | "partial" | "needs_shop";
   items: AnswerItem[];
-  ingredientClaims: { term: string; onList: boolean; matched: string[] }[];
+  /** byCode: detected in the message and answered by the dictionary, not reported by the model. */
+  ingredientClaims: { term: string; onList: boolean; matched: string[]; byCode?: boolean }[];
   facilityWarning: string | null;
   allergyConcern: boolean;
   productMismatch: string | null;
   checks: Check[];
   model: string;
   ms: number;
+  /** Free-model requests this draft spent (0 when served from cache). */
+  requestsUsed: number;
+  cached: boolean;
 };

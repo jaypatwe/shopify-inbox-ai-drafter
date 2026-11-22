@@ -1,14 +1,18 @@
 import { createOpenRouter } from "@openrouter/ai-sdk-provider";
-import { generateText, Output } from "ai";
+import { generateText, Output, type LanguageModel } from "ai";
 import { z } from "zod";
+import { cacheKey, readCache, writeCache } from "./cache";
 import {
   annotateIngredients,
+  detectIngredientTerms,
   facilityWarning,
   findIngredient,
   normalizeForMatch,
   renderProductPage,
 } from "./page-context";
+import type { AnnotatedIngredient } from "./types";
 import { normalizeInci } from "./glossary";
+import { getFreeQuota, invalidateQuota, QuotaExhaustedError } from "./quota";
 import {
   PAGE_FIELDS,
   type AnswerItem,
@@ -18,15 +22,65 @@ import {
   type Product,
 } from "./types";
 
-// Free model by default. Override with OPENROUTER_MODEL (e.g. anthropic/claude-sonnet-5.5) once the account has credits.
+// ---------------------------------------------------------------------------
+// Models: free OpenRouter models only. The account has no credits and never will, so a paid
+// model id is rejected rather than silently failing at request time.
+// ---------------------------------------------------------------------------
+
 export const MODEL_ID = process.env.OPENROUTER_MODEL || "baidu/ernie-5.5-flash-preview:free";
+
+/** Tried in order by OpenRouter when the primary is down or rate-limited upstream. All free, all support structured output. */
+const FALLBACK_MODELS = ["nvidia/nemotron-3.5-super-vl:free", "inclusionai/ling-3.2-flash:free"];
+
+if (!MODEL_ID.endsWith(":free")) {
+  throw new Error(`OPENROUTER_MODEL must be a free model (ending in ":free"); got "${MODEL_ID}".`);
+}
 
 const HOLDING_LINE = "I'll check with the shop and get back to you";
 
-function model() {
+function model(): LanguageModel {
   const apiKey = process.env.OPENROUTER_API_KEY;
   if (!apiKey) throw new Error("OPENROUTER_API_KEY is not set. Add it to .env.local.");
   return createOpenRouter({ apiKey })(MODEL_ID);
+}
+
+/**
+ * Every model call goes through here. Responses are cached by (models, system prompt, prompt), so
+ * a repeat draft costs no free requests, and fixes to the code after the model call apply to
+ * cached drafts without spending any. Only a prompt change triggers new requests.
+ */
+async function callModel<S extends z.ZodType>(opts: {
+  schema: S;
+  system: string;
+  prompt: string;
+  maxOutputTokens: number;
+  usage: { requests: number };
+}): Promise<z.infer<S>> {
+  const key = cacheKey({ models: [MODEL_ID, ...FALLBACK_MODELS], system: opts.system, prompt: opts.prompt });
+  const hit = readCache<{ output: z.infer<S> }>(key);
+  if (hit && opts.schema.safeParse(hit.output).success) return hit.output;
+
+  const quota = await getFreeQuota();
+  if (quota && quota.remaining < 1) throw new QuotaExhaustedError(quota);
+
+  const output = await withRetry(async () => {
+    opts.usage.requests++;
+    const result = await generateText({
+      model: model(),
+      temperature: 0,
+      // One SDK retry only: every retry spends one of the day's free requests.
+      maxRetries: 1,
+      providerOptions: { openrouter: { models: [MODEL_ID, ...FALLBACK_MODELS] } },
+      maxOutputTokens: opts.maxOutputTokens,
+      output: Output.object({ schema: opts.schema }),
+      system: opts.system,
+      prompt: opts.prompt,
+    });
+    return result.output as z.infer<S>;
+  });
+  invalidateQuota();
+  writeCache(key, { output });
+  return output;
 }
 
 // ---------------------------------------------------------------------------
@@ -123,21 +177,19 @@ export async function draftReply(input: {
   shopperName?: string;
 }): Promise<DraftResult> {
   const started = Date.now();
-  const { product, message } = input;
+  const { product } = input;
+  const message = input.message.trim();
   const page = renderProductPage(product);
   const ingredients = annotateIngredients(product);
   const checks: Check[] = [];
+  const usage = { requests: 0 };
 
-  const draft = await withRetry(async () => {
-    const { output } = await generateText({
-      model: model(),
-      temperature: 0,
-      maxOutputTokens: 4000,
-      output: Output.object({ schema: draftSchema }),
-      system: DRAFT_SYSTEM,
-      prompt: `PRODUCT PAGE\n${page}\n\nSHOPPER MESSAGE\n${message}`,
-    });
-    return output;
+  const draft = await callModel({
+    schema: draftSchema,
+    system: DRAFT_SYSTEM,
+    prompt: `PRODUCT PAGE\n${page}\n\nSHOPPER MESSAGE\n${message}`,
+    maxOutputTokens: 4000,
+    usage,
   });
 
   // --- Step 2a: every quote must actually be on the page -----------------------------------
@@ -195,17 +247,52 @@ export async function draftReply(input: {
     }
     ingredientClaims.push({ term: c.term, onList: c.on_list, matched: [...direct, ...related].map((d) => d.display) });
   }
+
+  // Code-detected ingredient words the model didn't report. Free models skip ingredient_checks
+  // sometimes, so the dictionary answer is enforced here without relying on the model.
+  const answerText = () => items.map((i) => i.answer).join(" ");
+  const presentByCode: AnnotatedIngredient[][] = [];
+  for (const term of detectIngredientTerms(message)) {
+    const { direct, related } = findIngredient(product, term);
+    const covered = ingredientClaims.some((c) => {
+      const t = c.term.toLowerCase();
+      return t.includes(term) || term.includes(t) || c.matched.some((m) => direct.some((d) => d.display === m));
+    });
+    if (covered) continue;
+    const onList = direct.length > 0;
+    ingredientClaims.push({ term, onList, matched: [...direct, ...related].map((d) => d.display), byCode: true });
+    // Quoted facility warnings ("...also handles tree nuts") aren't ingredient claims.
+    const sentences = answerText()
+      .split(/(?<=[.!?])\s+/)
+      .filter((x) => x.toLowerCase().includes(term) && !/facility|handles/i.test(x));
+    const negated = sentences.some((x) => /\b(no|not|isn't|doesn't|does not|without|free)\b/i.test(x));
+    if (onList && negated) {
+      failClosed = `The draft seems to deny "${term}", but the dictionary found ${direct.map((d) => d.display).join(", ")}.`;
+    } else if (!onList && sentences.length && !negated) {
+      failClosed = `The draft mentions "${term}" as if present, but it is not on this page's ingredient list.`;
+    } else if (onList) {
+      presentByCode.push(direct);
+    }
+  }
+
   if (ingredientClaims.length) {
     checks.push({
       label: "Ingredient answers match the ingredient dictionary",
       ok: !failClosed,
-      detail: failClosed ?? ingredientClaims.map((c) => `${c.term}: ${c.onList ? "on the list" : "not on the list"}`).join("; "),
+      detail:
+        failClosed ??
+        ingredientClaims
+          .map((c) => `${c.term}: ${c.onList ? "on the list" : "not on the list"}${c.byCode ? " (found by code)" : ""}`)
+          .join("; "),
     });
   }
 
   // --- Step 2c: Latin names in answers get their plain-English bracket ------------------------
   let bracketsAdded = 0;
+  // Product names can contain ingredient names ("Jojoba Squalane Face Serum"): shield them first.
+  const TITLE_MARK = "\u0000TITLE\u0000";
   for (const item of items) {
+    item.answer = item.answer.split(product.title).join(TITLE_MARK);
     for (const ing of ingredients) {
       if (!ing.plain) continue;
       // The label as written (if it needs a bracket), plus the label with its own bracket dropped
@@ -223,6 +310,7 @@ export async function draftReply(input: {
         });
       }
     }
+    item.answer = item.answer.split(TITLE_MARK).join(product.title);
   }
   const unbracketed = items.flatMap((item) =>
     ingredients.filter((ing) => !ing.plain && item.answer.toLowerCase().includes(ing.inci.toLowerCase())),
@@ -237,16 +325,29 @@ export async function draftReply(input: {
         : "OK",
   });
 
-  // --- Step 3: second-pass audit of everything the shopper will read -------------------------
+  // --- Step 3: second-pass audit -------------------------------------------------------------
+  // The review costs a second free request, so it's spent where a wrong answer can hurt someone:
+  // allergy/sensitivity questions and ingredient questions. Low-stakes drafts (usage, size,
+  // price) rely on the quote check, and lose any partial text on items sent to the shop.
+  const highStakes = draft.allergy_or_sensitivity_concern || ingredientClaims.length > 0;
+  if (!highStakes) {
+    for (const it of items) if (it.status === "needs_shop") it.answer = "";
+  }
   const toAudit = items.map((it, index) => ({ index, it })).filter(({ it }) => it.answer);
-  if (toAudit.length && !failClosed) {
-    const { output: audit } = await generateText({
-      model: model(),
-      temperature: 0,
-      maxOutputTokens: 2000,
-      output: Output.object({ schema: auditSchema }),
+  if (toAudit.length && !failClosed && !highStakes) {
+    checks.push({
+      label: "Second-pass review skipped (not an allergy or ingredient question)",
+      ok: true,
+      detail: "Saves a free request. Answers are still backed by verified quotes.",
+    });
+  }
+  if (toAudit.length && !failClosed && highStakes) {
+    const audit = await callModel({
+      schema: auditSchema,
       system: AUDIT_SYSTEM,
       prompt: `PRODUCT PAGE\n${page}\n\nANSWERS\n${toAudit.map(({ index, it }) => `[${index}] Q: ${it.question}\nA: ${it.answer}`).join("\n\n")}`,
+      maxOutputTokens: 2000,
+      usage,
     });
     const problems: string[] = [];
     for (const r of audit.results) {
@@ -262,6 +363,20 @@ export async function draftReply(input: {
       ok: problems.length === 0,
       detail: problems.length ? `${problems.length} answer(s) held back: ${problems.join(" | ")}` : `${toAudit.length} answer(s) reviewed`,
     });
+  }
+
+  // An ingredient the shopper asked about that is on the list must be named in the reply. If the
+  // model's answer (after review) doesn't name it, add the dictionary fact.
+  const factLines: string[] = [];
+  for (const direct of presentByCode) {
+    const t = answerText().toLowerCase();
+    const named = direct.some(
+      (d) =>
+        t.includes(normalizeInci(d.inci)) ||
+        t.includes(d.inci.toLowerCase()) ||
+        (d.plain !== null && t.includes(d.plain.split(",")[0].toLowerCase())),
+    );
+    if (!named) factLines.push(`The ingredient list includes ${joinList(direct.map((d) => d.display))}.`);
   }
 
   // --- Step 4: facility warning and mismatch notes -------------------------------------------
@@ -294,11 +409,11 @@ export async function draftReply(input: {
   } else {
     const parts: string[] = [greeting];
     if (draft.product_mismatch) {
-      parts.push(
-        `Just to be clear: you mentioned ${draft.product_mismatch.replace(/\.$/, "")}, but these details are for our ${product.title}. If you meant a different product, let me know.`,
-      );
+      // Fixed wording: free models often return a whole sentence here instead of a short phrase.
+      parts.push(`Just to be clear, these details are for our ${product.title}. If you meant a different product, let me know.`);
     }
     for (const i of items) if (i.answer) parts.push(i.answer);
+    parts.push(...factLines);
     if (facilityNote) parts.push(facilityNote);
     // Fixed wording rather than a model-written summary of what's pending: the merchant already
     // sees which question is pending in the draft panel.
@@ -312,6 +427,10 @@ export async function draftReply(input: {
   }
   if (draft.product_mismatch) {
     checks.push({ label: "Product mismatch flagged", ok: true, detail: draft.product_mismatch });
+  }
+
+  if (factLines.length && !failClosed) {
+    checks.push({ label: "Ingredient fact added from the dictionary", ok: true, detail: factLines.join(" ") });
   }
 
   const answered = finalItems.filter((i) => i.status === "answered").length;
@@ -330,6 +449,8 @@ export async function draftReply(input: {
     checks,
     model: MODEL_ID,
     ms: Date.now() - started,
+    requestsUsed: usage.requests,
+    cached: usage.requests === 0,
   };
 }
 
@@ -337,7 +458,7 @@ export async function draftReply(input: {
  * The SDK already retries network/API errors. This also retries when a (free) model returns
  * nothing or malformed JSON, which shows up as NoOutputGeneratedError / NoObjectGeneratedError.
  */
-async function withRetry<T>(fn: () => Promise<T>, attempts = 3): Promise<T> {
+async function withRetry<T>(fn: () => Promise<T>, attempts = 2): Promise<T> {
   let last: unknown;
   for (let i = 0; i < attempts; i++) {
     try {
@@ -349,6 +470,10 @@ async function withRetry<T>(fn: () => Promise<T>, attempts = 3): Promise<T> {
     }
   }
   throw last;
+}
+
+function joinList(xs: string[]) {
+  return xs.length <= 1 ? xs.join("") : `${xs.slice(0, -1).join(", ")} and ${xs[xs.length - 1]}`;
 }
 
 function escapeRegex(s: string) {
